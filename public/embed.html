@@ -1,0 +1,130 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Booking Widget</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/fullcalendar@6.1.15/index.global.min.css">
+  <style>
+    body { font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, "Apple Color Emoji", "Segoe UI Emoji"; padding: 20px; }
+    label { display:block; margin: 8px 0; }
+    input, select, button { padding: 8px; font-size: 16px; }
+    #booking-app { max-width: 920px; margin: 0 auto; }
+    #quoteResult { background: #f6f6f6; padding: 12px; white-space: pre-wrap; }
+  </style>
+</head>
+<body>
+  <div id="booking-app">
+    <h2>Book your stay</h2>
+    <label>
+      Property
+      <select id="listingSelect"></select>
+    </label>
+    <div id="calendar" style="margin:16px 0;"></div>
+    <form id="quoteForm">
+      <label>Check-in <input id="startDate" type="date" required></label>
+      <label>Check-out <input id="endDate" type="date" required></label>
+      <label>Guests <input id="guests" type="number" min="1" value="2"></label>
+      <button type="submit">Get price</button>
+    </form>
+    <pre id="quoteResult"></pre>
+    <form id="guestForm" style="display:none;">
+      <h3>Guest details</h3>
+      <label>First name <input id="firstName" required></label>
+      <label>Last name <input id="lastName" required></label>
+      <label>Email <input id="email" type="email" required></label>
+      <label>Phone <input id="phone" required></label>
+      <div id="cardElement"></div>
+      <button id="confirmBtn" type="submit">Confirm booking</button>
+    </form>
+  </div>
+
+  <script src="https://cdn.jsdelivr.net/npm/fullcalendar@6.1.15/index.global.min.js"></script>
+  <script>
+  (async function () {
+    // When testing locally, run `npm run dev` and set apiBase to `http://localhost:3000/api`
+    const apiBase = '/api';
+
+    // 1) populate listings
+    const listingsResp = await fetch(`${apiBase}/listings`);
+    const listingsJson = await listingsResp.json();
+    const listings = listingsJson.result?.result || listingsJson.result || [];
+    const select = document.getElementById('listingSelect');
+    listings.forEach(l => {
+      const opt = document.createElement('option');
+      opt.value = JSON.stringify({ listingId: l.id, listingMapId: l.listingMapId });
+      opt.textContent = l.name || `Listing ${l.id}`;
+      select.appendChild(opt);
+    });
+
+    // 2) init calendar
+    const calEl = document.getElementById('calendar');
+    const calendar = new FullCalendar.Calendar(calEl, {
+      initialView: 'dayGridMonth',
+      selectable: true
+    });
+    calendar.render();
+
+    async function refreshCalendar() {
+      const { listingId } = JSON.parse(select.value);
+      const start = new Date();
+      const end = new Date(); end.setMonth(end.getMonth() + 3);
+      const s = start.toISOString().slice(0,10);
+      const e = end.toISOString().slice(0,10);
+      const data = await fetch(`${apiBase}/availability?listingId=${listingId}&start=${s}&end=${e}`).then(r => r.json());
+      const events = (data.result?.calendar || []).filter(d => d.isAvailable === 0).map(d => ({
+        start: d.date, end: d.date, display: 'background', backgroundColor: '#999'
+      }));
+      calendar.removeAllEvents();
+      calendar.addEventSource(events);
+    }
+    select.addEventListener('change', refreshCalendar);
+    await refreshCalendar();
+
+    // 3) price flow
+    const quoteForm = document.getElementById('quoteForm');
+    const quoteResult = document.getElementById('quoteResult');
+    const guestForm = document.getElementById('guestForm');
+    let lastQuote = null;
+
+    quoteForm.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const { listingMapId } = JSON.parse(select.value);
+      const startingDate = document.getElementById('startDate').value;
+      const endingDate = document.getElementById('endDate').value;
+      const numberOfGuests = parseInt(document.getElementById('guests').value, 10);
+      const q = await fetch(`${apiBase}/price`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ listingMapId, startingDate, endingDate, numberOfGuests })
+      }).then(r => r.json());
+
+      const total = q?.result?.totalPrice ?? q?.totalPrice;
+      const components = q?.result?.components ?? q?.components ?? [];
+      lastQuote = { listingMapId, startingDate, endingDate, numberOfGuests, totalPrice: total, components };
+      quoteResult.textContent = `Total: ${total}
+
+Breakdown:
+` + components.map(c => `${c.title || c.name}: ${c.total}`).join('\n');
+      guestForm.style.display = 'block';
+    });
+
+    // 4) create reservation (no card collection in this demo)
+    guestForm.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const payload = {
+        ...lastQuote,
+        guestFirstName: document.getElementById('firstName').value,
+        guestLastName: document.getElementById('lastName').value,
+        guestEmail: document.getElementById('email').value,
+        guestPhone: document.getElementById('phone').value
+      };
+      const res = await fetch(`${apiBase}/reservations`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload)
+      }).then(r => r.json());
+      alert('Reservation created! ID: ' + (res?.result?.id || res?.result?.reservation?.id || res?.id || 'OK'));
+    });
+  })();
+  </script>
+</body>
+</html>
