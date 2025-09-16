@@ -1,148 +1,236 @@
-<script src="https://cdn.jsdelivr.net/npm/fullcalendar@6.1.15/index.global.min.js"></script>
-<script>
-(async function () {
-  // If you're using the iframe (recommended), keep '/api'.
-  // If you pasted this widget directly into Squarespace (no iframe),
-  // set apiBase to 'https://YOUR-APP.vercel.app/api'
-  const apiBase = '/api';
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Booking Widget</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/fullcalendar@6.1.15/index.global.min.css">
+  <style>
+    :root { --font: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial; }
+    body { font-family: var(--font); margin: 0; padding: 20px; background:#fff; }
+    #booking-app { max-width: 920px; margin: 0 auto; }
+    h2 { margin: 0 0 8px; }
+    #status { font-size: 14px; color: #666; margin-bottom: 12px; }
+    label { display:block; margin: 10px 0; }
+    input, select, button { padding: 8px; font-size: 16px; }
+    #calendar { margin: 16px 0; }
+    #quoteResult { background:#f6f6f6; padding:12px; white-space: pre-wrap; }
+    #err { background:#fff4f4; color:#900; border:1px solid #f3c2c2; padding:10px; margin:12px 0; display:none; }
+  </style>
+</head>
+<body>
+  <div id="booking-app">
+    <h2>Book your stay</h2>
+    <div id="status">Loading…</div>
+    <div id="err"></div>
 
-  // 1) populate listings
-  const listingsResp = await fetch(`${apiBase}/listings`);
-  const listingsJson = await listingsResp.json();
-  const listings = listingsJson.result?.result || listingsJson.result || [];
-  const select = document.getElementById('listingSelect');
-  listings.forEach(l => {
-    const opt = document.createElement('option');
-    opt.value = JSON.stringify({ listingId: l.id, listingMapId: l.listingMapId });
-    opt.textContent = l.name || `Listing ${l.id}`;
-    select.appendChild(opt);
-  });
+    <label>
+      Property
+      <select id="listingSelect"></select>
+    </label>
 
-  // 2) init calendar
-  const calEl = document.getElementById('calendar');
-  const calendar = new FullCalendar.Calendar(calEl, {
-    initialView: 'dayGridMonth',
-    selectable: true
-  });
-  calendar.render();
+    <div id="calendar"></div>
 
-  // Keep latest availability days around (for basic validation)
-  let lastDays = [];
+    <form id="quoteForm">
+      <label>Check-in <input id="startDate" type="date" required></label>
+      <label>Check-out <input id="endDate" type="date" required></label>
+      <label>Guests <input id="guests" type="number" min="1" value="2"></label>
+      <button type="submit">Get price</button>
+    </form>
 
-  // 3) load + shade unavailable days (booked/blocked)
-  async function refreshCalendar() {
-    const { listingId } = JSON.parse(select.value);
+    <pre id="quoteResult"></pre>
 
-    // show a longer window so booked days are visible
-    const start = new Date();
-    const end = new Date(); end.setMonth(end.getMonth() + 12);
+    <form id="guestForm" style="display:none;">
+      <h3>Guest details</h3>
+      <label>First name <input id="firstName" required></label>
+      <label>Last name <input id="lastName" required></label>
+      <label>Email <input id="email" type="email" required></label>
+      <label>Phone <input id="phone" required></label>
+      <button id="confirmBtn" type="submit">Confirm booking</button>
+    </form>
+  </div>
 
-    const s = start.toISOString().slice(0,10);
-    const e = end.toISOString().slice(0,10);
+  <script src="https://cdn.jsdelivr.net/npm/fullcalendar@6.1.15/index.global.min.js"></script>
+  <script>
+  // Show script errors *on the page* (not just console)
+  (function attachGlobalErrorTrap(){
+    window.addEventListener('error', e => showErr('JS error: ' + (e.message || e.error)));
+    window.addEventListener('unhandledrejection', e => showErr('Promise error: ' + (e.reason && (e.reason.message || e.reason)) ));
+  })();
 
-    const resp = await fetch(`${apiBase}/availability?listingId=${listingId}&start=${s}&end=${e}`);
-    const data = await resp.json();
-
-    // payload shape can vary: prefer result.calendar, fallback to calendar
-    const days = data?.result?.calendar ?? data?.calendar ?? [];
-    lastDays = days;
-
-    // mark a day unavailable if any of these flags indicate booked/blocked
-    const unavailable = days.filter(d =>
-      d.isAvailable === 0 ||
-      d.available === 0 ||
-      d.isBlocked === 1 ||
-      d.status === 'booked' ||
-      d.status === 'blocked' ||
-      (typeof d.reservationId !== 'undefined' && d.reservationId !== null)
-    ).map(d => {
-      // FullCalendar background events use an exclusive end → add 1 day
-      const startStr = d.date;                  // "YYYY-MM-DD"
-      const endDate = new Date(d.date);
-      endDate.setDate(endDate.getDate() + 1);
-      const endStr = endDate.toISOString().slice(0,10);
-      return { start: startStr, end: endStr, display: 'background' };
-    });
-
-    calendar.removeAllEvents();
-    if (unavailable.length) calendar.addEventSource(unavailable);
-
-    // optional on-screen status (safe if element missing)
-    const statusEl = document.getElementById('status');
-    if (statusEl) statusEl.textContent =
-      `Loaded ${days.length} days • shaded ${unavailable.length} unavailable`;
+  function setStatus(msg){ const el = document.getElementById('status'); if (el) el.textContent = msg; }
+  function showErr(msg){
+    const el = document.getElementById('err'); if (!el) return;
+    el.style.display = 'block';
+    el.textContent = typeof msg === 'string' ? msg : JSON.stringify(msg, null, 2);
+    console.error(msg);
   }
 
-  select.addEventListener('change', refreshCalendar);
-  await refreshCalendar();
+  (async function () {
+    try {
+      // ---------- IMPORTANT ----------
+      // If you're viewing this page *directly on Vercel* or via an iframe to Vercel,
+      // keep apiBase = '/api' (same-origin).
+      // If you pasted this HTML directly into Squarespace (no iframe), either:
+      //   1) add ?apiBase=https://YOUR-APP.vercel.app/api to the URL, or
+      //   2) set apiBase below to your Vercel domain + '/api'
+      const qp = new URLSearchParams(location.search);
+      let apiBase = qp.get('apiBase') || '/api';
 
-  // 4) pricing flow
-  const quoteForm = document.getElementById('quoteForm');
-  const quoteResult = document.getElementById('quoteResult');
-  const guestForm = document.getElementById('guestForm');
-  let lastQuote = null;
+      setStatus('Loading listings…');
 
-  quoteForm.addEventListener('submit', async (e) => {
-    e.preventDefault();
-    const { listingMapId } = JSON.parse(select.value);
-    const startingDate = document.getElementById('startDate').value;
-    const endingDate = document.getElementById('endDate').value;
-    const numberOfGuests = parseInt(document.getElementById('guests').value, 10);
+      // 1) LISTINGS
+      const listingsResp = await fetch(`${apiBase}/listings`);
+      if (!listingsResp.ok) {
+        showErr(`Failed to load /listings (${listingsResp.status}). If this page is NOT on your Vercel domain, set ?apiBase=https://YOUR-APP.vercel.app/api`);
+        return;
+      }
+      const listingsJson = await listingsResp.json();
+      const listings = listingsJson.result?.result || listingsJson.result || [];
+      if (!Array.isArray(listings) || listings.length === 0) {
+        showErr('No listings returned. Check your HOSTAWAY_ACCESS_TOKEN (Vercel → Project → Settings → Environment Variables).');
+        return;
+      }
 
-    // basic guard: prevent quoting if the selected range hits a blocked day
-    const sT = new Date(startingDate).getTime();
-    const eT = new Date(endingDate).getTime();
-    const rangeHasBlocked = lastDays.some(d => {
-      const blocked = (d.isAvailable === 0 || d.available === 0 || d.isBlocked === 1 ||
-                       d.status === 'booked' || d.status === 'blocked' ||
-                       (typeof d.reservationId !== 'undefined' && d.reservationId !== null));
-      if (!blocked) return false;
-      const dT = new Date(d.date).getTime();
-      return dT >= sT && dT < eT;
-    });
-    if (rangeHasBlocked) {
-      alert('Those dates include a blocked day. Please choose different dates.');
-      return;
-    }
+      const select = document.getElementById('listingSelect');
+      listings.forEach(l => {
+        const opt = document.createElement('option');
+        opt.value = JSON.stringify({ listingId: l.id, listingMapId: l.listingMapId });
+        opt.textContent = l.name || `Listing ${l.id}`;
+        select.appendChild(opt);
+      });
 
-    const q = await fetch(`${apiBase}/price`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ listingMapId, startingDate, endingDate, numberOfGuests })
-    }).then(r => r.json());
+      // 2) CALENDAR INIT
+      const calEl = document.getElementById('calendar');
+      if (!window.FullCalendar) {
+        showErr('FullCalendar failed to load (CDN). Check network or try again.');
+        return;
+      }
+      const calendar = new FullCalendar.Calendar(calEl, {
+        initialView: 'dayGridMonth',
+        selectable: true
+      });
+      calendar.render();
 
-    const total = q?.result?.totalPrice ?? q?.totalPrice;
-    const components = q?.result?.components ?? q?.components ?? [];
-    const fmt = new Intl.NumberFormat(undefined, { style:'currency', currency:'USD' });
+      let lastDays = [];
 
-    lastQuote = { listingMapId, startingDate, endingDate, numberOfGuests, totalPrice: total, components };
-    quoteResult.textContent =
-      `Total: ${fmt.format(total)}\n\nBreakdown:\n` +
-      components.map(c => `${c.title || c.name}: ${fmt.format(c.total)}`).join('\n');
+      async function refreshCalendar() {
+        try {
+          const { listingId } = JSON.parse(select.value);
+          setStatus(`Loading availability for listing ${listingId}…`);
 
-    guestForm.style.display = 'block';
-  });
+          const start = new Date();
+          const end = new Date(); end.setMonth(end.getMonth() + 12);
+          const s = start.toISOString().slice(0,10);
+          const e = end.toISOString().slice(0,10);
 
-  // 5) create reservation
-  guestForm.addEventListener('submit', async (e) => {
-    e.preventDefault();
-    const payload = {
-      ...lastQuote,
-      guestFirstName: document.getElementById('firstName').value,
-      guestLastName: document.getElementById('lastName').value,
-      guestEmail: document.getElementById('email').value,
-      guestPhone: document.getElementById('phone').value
-    };
-    const res = await fetch(`${apiBase}/reservations`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload)
-    }).then(r => r.json());
+          const resp = await fetch(`${apiBase}/availability?listingId=${listingId}&start=${s}&end=${e}`);
+          if (!resp.ok) {
+            showErr(`Failed to load availability (${resp.status}). If using Squarespace (no iframe), set apiBase to your Vercel /api.`);
+            return;
+          }
+          const data = await resp.json();
 
-    alert('Reservation created! ID: ' + (res?.result?.id || res?.result?.reservation?.id || res?.id || 'OK'));
-    // Optional redirect:
-    // window.location.href = '/thank-you';
-  });
-})();
-</script>
+          const days = data?.result?.calendar ?? data?.calendar ?? [];
+          lastDays = days;
 
+          const unavailable = days.filter(d =>
+            d.isAvailable === 0 ||
+            d.available === 0 ||
+            d.isBlocked === 1 ||
+            d.status === 'booked' ||
+            d.status === 'blocked' ||
+            (typeof d.reservationId !== 'undefined' && d.reservationId !== null)
+          ).map(d => {
+            const startStr = d.date;
+            const endDate = new Date(d.date); endDate.setDate(endDate.getDate() + 1); // end exclusive
+            const endStr = endDate.toISOString().slice(0,10);
+            return { start: startStr, end: endStr, display: 'background' };
+          });
+
+          calendar.removeAllEvents();
+          if (unavailable.length) calendar.addEventSource(unavailable);
+
+          setStatus(`Loaded ${days.length} days • shaded ${unavailable.length} unavailable`);
+          console.log('Sample days:', days.slice(0,5));
+        } catch (err) { showErr(err); }
+      }
+      select.addEventListener('change', refreshCalendar);
+      await refreshCalendar();
+
+      // 3) PRICING
+      const quoteForm = document.getElementById('quoteForm');
+      const quoteResult = document.getElementById('quoteResult');
+      const guestForm = document.getElementById('guestForm');
+      let lastQuote = null;
+
+      quoteForm.addEventListener('submit', async (e) => {
+        e.preventDefault();
+        try {
+          const { listingMapId } = JSON.parse(select.value);
+          const startingDate = document.getElementById('startDate').value;
+          const endingDate = document.getElementById('endDate').value;
+          const numberOfGuests = parseInt(document.getElementById('guests').value, 10);
+
+          // basic guard against blocked days in range
+          const sT = new Date(startingDate).getTime();
+          const eT = new Date(endingDate).getTime();
+          const rangeHasBlocked = lastDays.some(d => {
+            const blocked = (d.isAvailable === 0 || d.available === 0 || d.isBlocked === 1 ||
+                             d.status === 'booked' || d.status === 'blocked' ||
+                             (typeof d.reservationId !== 'undefined' && d.reservationId !== null));
+            if (!blocked) return false;
+            const dT = new Date(d.date).getTime();
+            return dT >= sT && dT < eT;
+          });
+          if (rangeHasBlocked) return alert('Those dates include a blocked day. Please choose different dates.');
+
+          const q = await fetch(`${apiBase}/price`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ listingMapId, startingDate, endingDate, numberOfGuests })
+          });
+          if (!q.ok) { showErr('Price request failed: ' + q.status); return; }
+          const jq = await q.json();
+
+          const total = jq?.result?.totalPrice ?? jq?.totalPrice;
+          const components = jq?.result?.components ?? jq?.components ?? [];
+          const fmt = new Intl.NumberFormat(undefined, { style:'currency', currency:'USD' });
+
+          lastQuote = { listingMapId, startingDate, endingDate, numberOfGuests, totalPrice: total, components };
+          quoteResult.textContent =
+            `Total: ${fmt.format(total)}\n\nBreakdown:\n` +
+            components.map(c => `${c.title || c.name}: ${fmt.format(c.total)}`).join('\n');
+
+          guestForm.style.display = 'block';
+          setStatus('Reviewing price…');
+        } catch (err) { showErr(err); }
+      });
+
+      // 4) RESERVATION
+      guestForm.addEventListener('submit', async (e) => {
+        e.preventDefault();
+        try {
+          const payload = {
+            ...lastQuote,
+            guestFirstName: document.getElementById('firstName').value,
+            guestLastName: document.getElementById('lastName').value,
+            guestEmail: document.getElementById('email').value,
+            guestPhone: document.getElementById('phone').value
+          };
+          const r = await fetch(`${apiBase}/reservations`, {
+            method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload)
+          });
+          if (!r.ok) { showErr('Reservation failed: ' + r.status); return; }
+          const jr = await r.json();
+          alert('Reservation created! ID: ' + (jr?.result?.id || jr?.result?.reservation?.id || jr?.id || 'OK'));
+          setStatus('Reservation created.');
+          // window.location.href = '/thank-you'; // optional redirect
+        } catch (err) { showErr(err); }
+      });
+
+    } catch (e) { showErr(e); }
+  })();
+  </script>
+</body>
+</html>
